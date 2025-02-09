@@ -42,10 +42,10 @@ next-env.d.ts
 <<<<<<< Updated upstream
 
 # Idx database
-data
+.data
 ||||||| Stash base
 =======
 
 # IDX database
-data
+.data
 >>>>>>> Stashed changes
