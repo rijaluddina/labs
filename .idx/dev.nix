@@ -5,8 +5,8 @@
   channel = "stable-24.05"; # or "unstable"
   # Use https://search.nixos.org/packages to find packages
   packages = [
-    pkgs.deno
-    pkgs.nodejs_20
+    pkgs.nodejs_22
+    pkgs.python312
     pkgs.nodePackages.pnpm
   ];
   # Configure services
@@ -21,13 +21,19 @@
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
       "ms-toolsai.jupyter"
+      "ms-python.python"
     ];
     # Workspace lifecycle hooks
     workspace = {
       # Runs when a workspace is first created
       onCreate = {
         # Example: install JS dependencies from NPM
-        pnpm-install = "pnpm install";
+        pnpm-install = ''
+          pnpm setup
+          pnpm install
+          pnpm add --global deno@latest
+          deno jupyter --unstable --install
+        '';
         # Open editors for the following files by default, if they exist:
         default.openFiles = [ ".idx/dev.nix" "README.md" ];
       };
