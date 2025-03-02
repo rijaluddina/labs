@@ -12,7 +12,7 @@
   # Configure services
   services.docker.enable = true;
   services.postgres = {
-    enable = true;   
+    enable = true;
     enableTcp = true;
   };
   # Sets environment variables in the workspace
@@ -31,6 +31,7 @@
         pnpm-install = ''
           pnpm setup
           pnpm install
+          source $HOME/.bashrc
           pnpm add --global deno@latest
           deno jupyter --unstable --install
         '';
