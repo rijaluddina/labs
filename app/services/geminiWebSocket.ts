@@ -22,7 +22,9 @@ export class GeminiWebSocket {
   private isPlayingResponse: boolean = false;
   private onPlayingStateChange: ((isPlaying: boolean) => void) | null = null;
   private onAudioLevelChange: ((level: number) => void) | null = null;
-  private onTranscriptionCallback: ((text: string) => void) | null = null;
+  private onTranscriptionCallback:
+    | ((text: string, isUserMessage?: boolean) => void)
+    | null = null;
   private transcriptionService: TranscriptionService;
   private accumulatedPcmData: string[] = [];
 
@@ -31,7 +33,7 @@ export class GeminiWebSocket {
     onSetupComplete: () => void,
     onPlayingStateChange: (isPlaying: boolean) => void,
     onAudioLevelChange: (level: number) => void,
-    onTranscription: (text: string) => void,
+    onTranscription: (text: string, isUserMessage?: boolean) => void
   ) {
     this.onMessageCallback = onMessage;
     this.onSetupCompleteCallback = onSetupComplete;
@@ -170,7 +172,7 @@ export class GeminiWebSocket {
       const audioBuffer = this.audioContext.createBuffer(
         1,
         float32Data.length,
-        24000,
+        24000
       );
       audioBuffer.getChannelData(0).set(float32Data);
 
@@ -205,6 +207,7 @@ export class GeminiWebSocket {
         this.currentSource.stop();
       } catch (e) {
         // Ignore errors if already stopped
+        console.error("[WebSocket] Error stopping audio:", e);
       }
       this.currentSource = null;
     }
@@ -235,6 +238,18 @@ export class GeminiWebSocket {
         }
       }
 
+      // Handle user transcription
+      if (messageData.serverContent?.userTurn?.parts) {
+        const parts = messageData.serverContent.userTurn.parts;
+        for (const part of parts) {
+          if (part.text) {
+            console.log("[User Transcription]:", part.text);
+            // Kirim transkripsi pengguna ke callback dengan flag isUserMessage=true
+            this.onTranscriptionCallback?.(part.text, true);
+          }
+        }
+      }
+
       // Handle turn completion separately
       if (messageData.serverContent?.turnComplete === true) {
         if (this.accumulatedPcmData.length > 0) {
@@ -245,11 +260,12 @@ export class GeminiWebSocket {
             const transcription =
               await this.transcriptionService.transcribeAudio(
                 wavData,
-                "audio/wav",
+                "audio/wav"
               );
-            console.log("[Transcription]:", transcription);
+            console.log("[Gemini Transcription]:", transcription);
 
-            this.onTranscriptionCallback?.(transcription);
+            // Kirim transkripsi Gemini ke callback dengan flag isUserMessage=false
+            this.onTranscriptionCallback?.(transcription, false);
             this.accumulatedPcmData = []; // Clear accumulated data
           } catch (error) {
             console.error("[WebSocket] Transcription error:", error);
@@ -270,5 +286,21 @@ export class GeminiWebSocket {
     this.isConnected = false;
     this.accumulatedPcmData = [];
   }
-}
 
+  // Fungsi baru untuk mengirim pesan teks
+  sendTextMessage(text: string) {
+    if (!this.isConnected || !this.ws || !this.isSetupComplete) return;
+
+    const message = {
+      realtime_input: {
+        text: text,
+      },
+    };
+
+    try {
+      this.ws.send(JSON.stringify(message));
+    } catch (error) {
+      console.error("[WebSocket] Error sending text message:", error);
+    }
+  }
+}

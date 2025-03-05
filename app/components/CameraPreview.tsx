@@ -1,18 +1,31 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 // import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "~/components/ui/button";
-import { Video, VideoOff } from "lucide-react";
+import { Video, VideoOff, Mic, MicOff } from "lucide-react";
 import { GeminiWebSocket } from "../services/geminiWebSocket";
 import { Base64 } from "js-base64";
 // import { Avatar, AvatarImage, AvatarFallback } from "~/components/ui/avatar";
 
 interface CameraPreviewProps {
-  onTranscription: (text: string) => void;
+  onTranscription: (text: string, isUserMessage?: boolean) => void;
+  onUserMessage?: (text: string) => void;
+  onError?: (error: Error) => void;
 }
 
-export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
+// Mengubah komponen menjadi forwardRef agar dapat menerima ref dari parent
+const CameraPreview = forwardRef<
+  { sendTextMessage: (text: string) => void },
+  CameraPreviewProps
+>(({ onTranscription, onUserMessage, onError }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -30,6 +43,9 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected"
   >("disconnected");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isMicEnabled, setIsMicEnabled] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const cleanupAudio = useCallback(() => {
     if (audioWorkletNodeRef.current) {
@@ -55,6 +71,25 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
     geminiWsRef.current.sendMediaChunk(b64Data, "audio/pcm");
   };
 
+  const handleError = useCallback(
+    (err: Error) => {
+      setError(err.message);
+      onError?.(err);
+      setIsLoading(false);
+    },
+    [onError]
+  );
+
+  const toggleMicrophone = useCallback(() => {
+    if (stream) {
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach((track) => {
+        track.enabled = !isMicEnabled;
+      });
+      setIsMicEnabled(!isMicEnabled);
+    }
+  }, [stream, isMicEnabled]);
+
   const toggleCamera = async () => {
     if (isStreaming && stream) {
       setIsStreaming(false);
@@ -67,20 +102,33 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
       setStream(null);
     } else {
       try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
+        setIsLoading(true);
+        setError(null);
 
-        const audioStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            sampleRate: 16000,
-            channelCount: 1,
-            echoCancellation: true,
-            autoGainControl: true,
-            noiseSuppression: true,
-          },
-        });
+        const videoStream = await navigator.mediaDevices
+          .getUserMedia({
+            video: true,
+            audio: false,
+          })
+          .catch((err) => {
+            handleError(err);
+            throw err;
+          });
+
+        const audioStream = await navigator.mediaDevices
+          .getUserMedia({
+            audio: {
+              sampleRate: 16000,
+              channelCount: 1,
+              echoCancellation: true,
+              autoGainControl: true,
+              noiseSuppression: true,
+            },
+          })
+          .catch((err) => {
+            handleError(err);
+            throw err;
+          });
 
         audioContextRef.current = new AudioContext({
           sampleRate: 16000,
@@ -98,8 +146,10 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
 
         setStream(combinedStream);
         setIsStreaming(true);
+        setIsLoading(false);
       } catch (err) {
         console.error("Error accessing media devices:", err);
+        handleError(err as Error);
         cleanupAudio();
       }
     }
@@ -119,7 +169,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
       },
       () => {
         console.log(
-          "[Camera] WebSocket setup complete, starting media capture",
+          "[Camera] WebSocket setup complete, starting media capture"
         );
         setIsWebSocketReady(true);
         setConnectionStatus("connected");
@@ -130,7 +180,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
       (level) => {
         setOutputAudioLevel(level);
       },
-      onTranscription,
+      onTranscription
     );
     geminiWsRef.current.connect();
 
@@ -207,7 +257,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
             channelCount: 1,
             channelCountMode: "explicit",
             channelInterpretation: "speakers",
-          },
+          }
         );
 
         const source = ctx.createMediaStreamSource(stream);
@@ -232,7 +282,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
           }
           setIsAudioSetup(false);
         };
-      } catch (error) {
+      } catch {
         if (isActive) {
           cleanupAudio();
           setIsAudioSetup(false);
@@ -253,6 +303,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
         audioWorkletNodeRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming, stream, isWebSocketReady, isModelSpeaking]);
 
   // Capture and send image
@@ -277,62 +328,190 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
     geminiWsRef.current.sendMediaChunk(b64Data, "image/jpeg");
   };
 
+  // Fungsi untuk mengirim pesan teks ke Gemini
+  const sendTextMessage = useCallback(
+    (text: string) => {
+      if (!geminiWsRef.current || !isWebSocketReady) {
+        console.error("Tidak dapat mengirim pesan: WebSocket tidak siap");
+        return;
+      }
+
+      // Panggil callback onUserMessage jika ada
+      if (onUserMessage) {
+        onUserMessage(text);
+      }
+
+      // Kirim pesan ke Gemini
+      console.log("Mengirim pesan teks ke Gemini:", text);
+      geminiWsRef.current.sendTextMessage(text);
+    },
+    [isWebSocketReady, onUserMessage]
+  );
+
+  // Ekspos fungsi sendTextMessage melalui ref
+  useImperativeHandle(
+    ref,
+    () => ({
+      sendTextMessage,
+    }),
+    [sendTextMessage]
+  );
+
+  // Expose sendTextMessage to window object as fallback
+  useEffect(() => {
+    // Menambahkan fungsi sendTextMessage ke window agar dapat diakses dari luar
+    if (typeof window !== "undefined") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).sendGeminiTextMessage = sendTextMessage;
+    }
+
+    return () => {
+      if (typeof window !== "undefined") {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (window as any).sendGeminiTextMessage;
+      }
+    };
+  }, [sendTextMessage]);
+
   return (
-    <div className="space-y-4">
-      <div className="relative">
+    <div className="relative w-full h-full flex flex-col">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="space-y-2 text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
+            <p className="text-sm text-white">Mempersiapkan kamera...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-red-500/90 text-white rounded-lg text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* Status Koneksi */}
+      <div
+        className={`
+          absolute top-4 left-4 px-3 py-1.5 rounded-full text-sm font-medium
+          ${
+            connectionStatus === "connected"
+              ? "bg-green-500/20 text-green-700"
+              : connectionStatus === "connecting"
+              ? "bg-yellow-500/20 text-yellow-700"
+              : "bg-red-500/20 text-red-700"
+          }
+        `}
+        role="status"
+        aria-live="polite"
+      >
+        {connectionStatus === "connected"
+          ? "Connected"
+          : connectionStatus === "connecting"
+          ? "Connecting..."
+          : "Disconnected"}
+      </div>
+
+      {/* Video Container */}
+      <div
+        className="relative flex-1 bg-black rounded-lg overflow-hidden"
+        role="region"
+        aria-label="Camera preview"
+      >
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          className="w-[640px] h-[480px] bg-muted rounded-lg overflow-hidden"
+          className="w-full h-full object-cover"
+          aria-label="Live camera feed"
         />
 
-        {/* Connection Status Overlay */}
-        {isStreaming && connectionStatus !== "connected" && (
-          <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg backdrop-blur-sm">
-            <div className="text-center space-y-2">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
-              <p className="text-white font-medium">
-                {connectionStatus === "connecting"
-                  ? "Connecting to Gemini..."
-                  : "Disconnected"}
-              </p>
-              <p className="text-white/70 text-sm">
-                Please wait while we establish a secure connection
-              </p>
+        {/* Camera Controls */}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-4">
+          <Button
+            onClick={toggleCamera}
+            size="icon"
+            variant="secondary"
+            className="h-12 w-12 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-sm"
+            aria-label={isStreaming ? "Turn off camera" : "Turn on camera"}
+            disabled={isLoading}
+          >
+            {isStreaming ? (
+              <VideoOff className="h-6 w-6" />
+            ) : (
+              <Video className="h-6 w-6" />
+            )}
+          </Button>
+
+          <Button
+            onClick={toggleMicrophone}
+            size="icon"
+            variant="secondary"
+            className="h-12 w-12 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-sm"
+            aria-label={isMicEnabled ? "Mute microphone" : "Unmute microphone"}
+            disabled={!isStreaming || isLoading}
+          >
+            {isMicEnabled ? (
+              <Mic className="h-6 w-6" />
+            ) : (
+              <MicOff className="h-6 w-6" />
+            )}
+          </Button>
+        </div>
+
+        {/* Audio Level Indicators */}
+        <div
+          className="absolute bottom-4 left-4 space-y-2"
+          role="region"
+          aria-label="Audio levels"
+        >
+          {/* Input Audio Level */}
+          <div className="flex items-center gap-2">
+            <div
+              className="w-20 h-1.5 bg-white/20 rounded-full overflow-hidden"
+              role="progressbar"
+              aria-label="Input audio level"
+              aria-valuenow={audioLevel}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className="h-full bg-green-500 transition-all duration-150"
+                style={{ width: `${audioLevel}%` }}
+              />
             </div>
           </div>
-        )}
 
-        <Button
-          onClick={toggleCamera}
-          size="icon"
-          className={`absolute left-1/2 bottom-4 -translate-x-1/2 rounded-full w-12 h-12 backdrop-blur-sm transition-colors
-            ${
-              isStreaming
-                ? "bg-red-500/50 hover:bg-red-500/70 text-white"
-                : "bg-green-500/50 hover:bg-green-500/70 text-white"
-            }`}
-        >
-          {isStreaming ? (
-            <VideoOff className="h-6 w-6" />
-          ) : (
-            <Video className="h-6 w-6" />
+          {/* Output Audio Level */}
+          {isModelSpeaking && (
+            <div className="flex items-center gap-2">
+              <div
+                className="w-20 h-1.5 bg-white/20 rounded-full overflow-hidden"
+                role="progressbar"
+                aria-label="Output audio level"
+                aria-valuenow={outputAudioLevel}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="h-full bg-blue-500 transition-all duration-150"
+                  style={{ width: `${outputAudioLevel}%` }}
+                />
+              </div>
+            </div>
           )}
-        </Button>
-      </div>
-      {isStreaming && (
-        <div className="w-[640px] h-2 rounded-full bg-green-100">
-          <div
-            className="h-full rounded-full transition-all bg-green-500"
-            style={{
-              width: `${isModelSpeaking ? outputAudioLevel : audioLevel}%`,
-              transition: "width 100ms ease-out",
-            }}
-          />
         </div>
-      )}
-      <canvas ref={videoCanvasRef} className="hidden" />
+      </div>
+
+      {/* Hidden canvas for image capture */}
+      <canvas ref={videoCanvasRef} className="hidden" aria-hidden="true" />
     </div>
   );
-}
+});
+
+// Tambahkan displayName untuk debugging
+CameraPreview.displayName = "CameraPreview";
+
+export default CameraPreview;
